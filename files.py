@@ -38,7 +38,7 @@ HTML_PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>File Browser</title>
+<title>Files</title>
 <style>
 :root {
   --bg: #f9fafb;
@@ -582,7 +582,7 @@ body {
     <div class="brand">
       <div class="logo">FB</div>
       <div>
-        <h1 class="h1">File Browser</h1>
+        <h1 class="h1">Files</h1>
         <p class="smallmuted"></p>
       </div>
     </div>
