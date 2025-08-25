@@ -12,7 +12,7 @@ Features:
 """
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
-import argparse, base64, json, mimetypes, os, shutil, sys, urllib.parse, io, zipfile
+import argparse, base64, json, mimetypes, os, shutil, sys, urllib.parse, io, zipfile, stat, pwd, grp, subprocess, threading, socket, time, struct, hashlib
 from pathlib import Path
 from datetime import datetime
 
@@ -49,14 +49,20 @@ HTML_PAGE = r"""<!doctype html>
   --border-radius: 8px;
   --shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
   --font-family: 'Inter', sans-serif;
+  --border-color: #e5e7eb;
+  --hover-bg: #f3f4f6;
+  --selection-bg: rgba(37, 99, 235, 0.1);
 }
 [data-theme="dark"] {
-  --bg: #111827;
-  --card-bg: #1f2937;
-  --text-color: #f9fafb;
-  --accent-color: #3b82f6;
+  --bg: #1a1a1a;
+  --card-bg: #2d2d2d;
+  --text-color: #e5e5e5;
+  --accent-color: #6b7280;
   --danger-color: #ef4444;
-  --shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+  --shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
+  --border-color: #404040;
+  --hover-bg: #3a3a3a;
+  --selection-bg: rgba(107, 114, 128, 0.2);
 }
 body {
   margin: 0;
@@ -374,10 +380,35 @@ body {
   background-color: var(--danger-color);
 }
 .row.selected {
-  background-color: rgba(37, 99, 235, 0.1);
+  background-color: var(--selection-bg);
+  border-left: 3px solid var(--accent-color);
 }
-[data-theme="dark"] .row.selected {
-  background-color: rgba(59, 130, 246, 0.2);
+.grid-item.selected {
+  background-color: var(--selection-bg);
+  border: 2px solid var(--accent-color);
+}
+.row:hover:not(.selected) {
+  background-color: var(--hover-bg);
+}
+.grid-item:hover:not(.selected) {
+  background-color: var(--hover-bg);
+}
+.drag-over {
+  background-color: rgba(107, 114, 128, 0.2) !important;
+  border: 2px dashed var(--accent-color) !important;
+}
+.no-select {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+.dragging {
+  opacity: 0.5;
+}
+.hidden-file {
+  opacity: 0.6;
+  font-style: italic;
 }
 .toolbar {
   display: flex;
@@ -591,6 +622,8 @@ body {
       <button id="uploadBtn" class="btn">Upload</button>
       <button id="mkdir" class="btn">New Folder</button>
       <button id="refresh" class="btn">Refresh</button>
+      <button id="toggleHidden" class="btn btn-secondary">👁️</button>
+      <button id="serverControlBtn" class="btn">🖥️ Servers</button>
       <button id="themeToggle" class="theme-toggle">🌙</button>
       <button id="aboutBtn" class="btn">About</button>
     </div>
@@ -616,6 +649,8 @@ body {
             <button id="renameBtn" class="dropdown-item" disabled>Rename</button>
             <button id="deleteBtn" class="dropdown-item" disabled>Delete</button>
             <button id="propertiesBtn" class="dropdown-item" disabled>Properties</button>
+            <button id="editBtn" class="dropdown-item" disabled>Edit</button>
+            <button id="permissionsBtn" class="dropdown-item" disabled>Permissions</button>
           </div>
         </div>
         <div class="dropdown">
@@ -682,6 +717,13 @@ body {
   <div class="context-menu-item" id="ctxProperties">
     <span>ℹ️</span> Properties
   </div>
+  <div class="context-menu-item" id="ctxEdit">
+    <span>✏️</span> Edit
+  </div>
+  <div class="context-menu-item" id="ctxPermissions">
+    <span>🔒</span> Permissions
+  </div>
+  <div class="context-menu-separator"></div>
   <div class="context-menu-item" id="ctxRefresh">
     <span>🔄</span> Refresh
   </div>
@@ -703,7 +745,10 @@ let state = {
   selectedFiles: new Set(),
   clipboard: {items: [], operation: null},
   viewMode: 'list',
-  contextTarget: null
+  contextTarget: null,
+  showHidden: false,
+  draggedItems: [],
+  servers: {nfs: {enabled: false, shares: []}, smb: {enabled: false, shares: [], users: []}}
 };
 function initTheme() {
   const savedTheme = localStorage.getItem('theme');
@@ -821,7 +866,13 @@ function renderListView(listing) {
   header.className='row';
   header.innerHTML=`<div style="font-weight:600">Name</div><div style="text-align:right;font-weight:600">Size</div><div style="text-align:right;font-weight:600">Modified</div>`;
   listing.appendChild(header);
-  if(!state.files || !state.files.length){
+  const filteredFiles = state.files.filter(file => {
+    if (!state.showHidden && file.name.startsWith('.')) {
+      return false;
+    }
+    return true;
+  });
+  if(!filteredFiles || !filteredFiles.length){
     const em = document.createElement('div');
     em.style.padding='50px 24px';
     em.style.textAlign='center';
@@ -834,12 +885,15 @@ function renderListView(listing) {
     listing.appendChild(em);
     return;
   }
-  for(const it of state.files){
+  for(const it of filteredFiles){
     const row = document.createElement('div');
-    row.className='row';
+    row.className='row no-select';
     row.dataset.path = it.path;
     if (state.selectedFiles.has(it.path)) {
       row.classList.add('selected');
+    }
+    if (it.name.startsWith('.')) {
+      row.classList.add('hidden-file');
     }
     const name = document.createElement('div');
     name.style.display='flex';
@@ -874,10 +928,16 @@ function renderListView(listing) {
     mod.style.textOverflow='ellipsis';
     mod.textContent = it.mtime;
     row.addEventListener('click', (e) => {
-      if (e.ctrlKey || e.metaKey) {
+      if (e.shiftKey) {
+        e.preventDefault();
+        if (state.selectedFiles.size > 0) {
+          selectRange(it.path);
+        } else {
+          toggleSelection(it.path);
+        }
+      } else if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
         toggleSelection(it.path);
-      } else if (e.shiftKey && state.selectedFiles.size > 0) {
-        selectRange(it.path);
       } else {
         clearSelection();
         toggleSelection(it.path);
@@ -899,6 +959,50 @@ function renderListView(listing) {
       state.contextTarget = it;
       showContextMenu(e.clientX, e.clientY);
     });
+    
+    // Add drag and drop functionality
+    row.draggable = true;
+    row.addEventListener('dragstart', (e) => {
+      if (!state.selectedFiles.has(it.path)) {
+        clearSelection();
+        toggleSelection(it.path);
+      }
+      state.draggedItems = Array.from(state.selectedFiles);
+      document.querySelectorAll('.row.selected, .grid-item.selected').forEach(item => {
+        item.classList.add('dragging');
+      });
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', JSON.stringify(state.draggedItems));
+    });
+    
+    row.addEventListener('dragend', (e) => {
+      document.querySelectorAll('.dragging').forEach(item => {
+        item.classList.remove('dragging');
+      });
+      state.draggedItems = [];
+    });
+    
+    if (it.is_dir) {
+      row.addEventListener('dragover', (e) => {
+        if (state.draggedItems.length > 0 && !state.draggedItems.includes(it.path)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          row.classList.add('drag-over');
+        }
+      });
+      
+      row.addEventListener('dragleave', (e) => {
+        row.classList.remove('drag-over');
+      });
+      
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        row.classList.remove('drag-over');
+        if (state.draggedItems.length > 0 && !state.draggedItems.includes(it.path)) {
+          moveMultipleItems(state.draggedItems, it.path);
+        }
+      });
+    }
     row.appendChild(name);
     row.appendChild(size);
     row.appendChild(mod);
@@ -911,7 +1015,13 @@ function renderListView(listing) {
 }
 function renderGridView(listing) {
   listing.className = 'grid-view';
-  if(!state.files || !state.files.length){
+  const filteredFiles = state.files.filter(file => {
+    if (!state.showHidden && file.name.startsWith('.')) {
+      return false;
+    }
+    return true;
+  });
+  if(!filteredFiles || !filteredFiles.length){
     const em = document.createElement('div');
     em.style.padding='24px';
     em.style.gridColumn = '1 / -1';
@@ -919,12 +1029,15 @@ function renderGridView(listing) {
     listing.appendChild(em);
     return;
   }
-  for(const it of state.files){
+  for(const it of filteredFiles){
     const item = document.createElement('div');
-    item.className='grid-item';
+    item.className='grid-item no-select';
     item.dataset.path = it.path;
     if (state.selectedFiles.has(it.path)) {
       item.classList.add('selected');
+    }
+    if (it.name.startsWith('.')) {
+      item.classList.add('hidden-file');
     }
     const icon = document.createElement('div');
     icon.className='icon';
@@ -935,10 +1048,16 @@ function renderGridView(listing) {
     item.appendChild(icon);
     item.appendChild(fileName);
     item.addEventListener('click', (e) => {
-      if (e.ctrlKey || e.metaKey) {
+      if (e.shiftKey) {
+        e.preventDefault();
+        if (state.selectedFiles.size > 0) {
+          selectRange(it.path);
+        } else {
+          toggleSelection(it.path);
+        }
+      } else if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
         toggleSelection(it.path);
-      } else if (e.shiftKey && state.selectedFiles.size > 0) {
-        selectRange(it.path);
       } else {
         clearSelection();
         toggleSelection(it.path);
@@ -960,6 +1079,50 @@ function renderGridView(listing) {
       state.contextTarget = it;
       showContextMenu(e.clientX, e.clientY);
     });
+    
+    // Add drag and drop functionality for grid view
+    item.draggable = true;
+    item.addEventListener('dragstart', (e) => {
+      if (!state.selectedFiles.has(it.path)) {
+        clearSelection();
+        toggleSelection(it.path);
+      }
+      state.draggedItems = Array.from(state.selectedFiles);
+      document.querySelectorAll('.row.selected, .grid-item.selected').forEach(selectedItem => {
+        selectedItem.classList.add('dragging');
+      });
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', JSON.stringify(state.draggedItems));
+    });
+    
+    item.addEventListener('dragend', (e) => {
+      document.querySelectorAll('.dragging').forEach(draggedItem => {
+        draggedItem.classList.remove('dragging');
+      });
+      state.draggedItems = [];
+    });
+    
+    if (it.is_dir) {
+      item.addEventListener('dragover', (e) => {
+        if (state.draggedItems.length > 0 && !state.draggedItems.includes(it.path)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          item.classList.add('drag-over');
+        }
+      });
+      
+      item.addEventListener('dragleave', (e) => {
+        item.classList.remove('drag-over');
+      });
+      
+      item.addEventListener('drop', (e) => {
+        e.preventDefault();
+        item.classList.remove('drag-over');
+        if (state.draggedItems.length > 0 && !state.draggedItems.includes(it.path)) {
+          moveMultipleItems(state.draggedItems, it.path);
+        }
+      });
+    }
     listing.appendChild(item);
   }
 }
@@ -1054,6 +1217,8 @@ function updateToolbarState() {
   document.getElementById('renameBtn').disabled = !singleSelection;
   document.getElementById('deleteBtn').disabled = !hasSelection;
   document.getElementById('propertiesBtn').disabled = !singleSelection;
+  document.getElementById('editBtn').disabled = !singleSelection || !isFile;
+  document.getElementById('permissionsBtn').disabled = !singleSelection;
 }
 function showContextMenu(x, y) {
   const menu = document.getElementById('contextMenu');
@@ -1070,6 +1235,8 @@ function showContextMenu(x, y) {
   document.getElementById('ctxRename').classList.toggle('disabled', state.selectedFiles.size !== 1);
   document.getElementById('ctxDelete').classList.toggle('disabled', !hasSelection);
   document.getElementById('ctxProperties').classList.toggle('disabled', state.selectedFiles.size !== 1);
+  document.getElementById('ctxEdit').classList.toggle('disabled', state.selectedFiles.size !== 1 || !isFile);
+  document.getElementById('ctxPermissions').classList.toggle('disabled', state.selectedFiles.size !== 1);
   document.getElementById('ctxPaste').classList.toggle('disabled', !hasClipboard);
   document.getElementById('ctxNewFolder').classList.remove('disabled');
   document.getElementById('ctxUpload').classList.remove('disabled');
@@ -1205,6 +1372,52 @@ function showModal(htmlContent) {
 function hideModal() {
   document.getElementById('modal').classList.remove('show');
 }
+
+function showToast(message, type = 'info') {
+  // Create toast container if it doesn't exist
+  let toastContainer = document.getElementById('toastContainer');
+  if (!toastContainer) {
+    toastContainer = document.createElement('div');
+    toastContainer.id = 'toastContainer';
+    toastContainer.style.cssText = 'position:fixed;top:20px;right:20px;z-index:10000;pointer-events:none';
+    document.body.appendChild(toastContainer);
+  }
+  
+  // Create toast element
+  const toast = document.createElement('div');
+  const bgColor = type === 'error' ? '#ef4444' : type === 'success' ? '#10b981' : '#6b7280';
+  toast.style.cssText = `
+    background:${bgColor};
+    color:white;
+    padding:12px 16px;
+    border-radius:6px;
+    margin-bottom:8px;
+    box-shadow:0 4px 12px rgba(0,0,0,0.3);
+    transform:translateX(100%);
+    transition:transform 0.3s ease;
+    pointer-events:auto;
+    max-width:300px;
+    word-wrap:break-word;
+  `;
+  toast.textContent = message;
+  
+  toastContainer.appendChild(toast);
+  
+  // Animate in
+  setTimeout(() => {
+    toast.style.transform = 'translateX(0)';
+  }, 10);
+  
+  // Auto remove after 4 seconds
+  setTimeout(() => {
+    toast.style.transform = 'translateX(100%)';
+    setTimeout(() => {
+      if (toast.parentNode) {
+        toast.parentNode.removeChild(toast);
+      }
+    }, 300);
+  }, 4000);
+}
 function showUploadModal() {
   const uploadHtml = `
     <div style="padding:8px">
@@ -1323,6 +1536,606 @@ function createFolder() {
     alert('Failed to create folder');
   });
 }
+
+function toggleHiddenFiles() {
+  state.showHidden = !state.showHidden;
+  localStorage.setItem('showHidden', state.showHidden);
+  const btn = document.getElementById('toggleHidden');
+  btn.textContent = state.showHidden ? '🙈' : '👁️';
+  btn.title = state.showHidden ? 'Hide hidden files' : 'Show hidden files';
+  renderListing();
+}
+
+async function moveItem(sourcePath, targetPath) {
+  try {
+    const fileName = sourcePath.split('/').pop();
+    const newPath = targetPath + (targetPath.endsWith('/') ? '' : '/') + fileName;
+    
+    const response = await fetch('/api/move', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source: sourcePath, target: newPath})
+    });
+    
+    if (!response.ok) {
+      throw new Error('Move failed');
+    }
+    
+    load(state.path);
+  } catch (e) {
+    console.error('Move failed:', e);
+    showModal('<div style="padding:8px"><h3>Error</h3><p>Failed to move item</p></div>');
+  }
+}
+
+async function moveMultipleItems(sourcePaths, targetPath) {
+  try {
+    const response = await fetch('/api/move-multiple', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sources: sourcePaths, target: targetPath})
+    });
+    
+    if (!response.ok) {
+      throw new Error('Move failed');
+    }
+    
+    clearSelection();
+    load(state.path);
+  } catch (e) {
+    console.error('Move multiple failed:', e);
+    showModal('<div style="padding:8px"><h3>Error</h3><p>Failed to move items</p></div>');
+  }
+}
+
+function showTextEditor(filePath) {
+  fetch('/api/edit?path=' + encodeURIComponent(filePath))
+    .then(response => {
+      if (!response.ok) throw new Error('Failed to load file');
+      return response.text();
+    })
+    .then(content => {
+      const ext = filePath.split('.').pop().toLowerCase();
+      const language = getLanguageFromExtension(ext);
+      
+      const editorHtml = `
+        <div style="padding:8px">
+          <h3>Edit: ${escapeHtml(filePath.split('/').pop())}</h3>
+          <div style="margin-bottom:10px">
+            <select id="languageSelect" style="padding:4px;margin-right:10px">
+              <option value="text" ${language === 'text' ? 'selected' : ''}>Plain Text</option>
+              <option value="javascript" ${language === 'javascript' ? 'selected' : ''}>JavaScript</option>
+              <option value="python" ${language === 'python' ? 'selected' : ''}>Python</option>
+              <option value="bash" ${language === 'bash' ? 'selected' : ''}>Bash</option>
+              <option value="powershell" ${language === 'powershell' ? 'selected' : ''}>PowerShell</option>
+              <option value="html" ${language === 'html' ? 'selected' : ''}>HTML</option>
+              <option value="css" ${language === 'css' ? 'selected' : ''}>CSS</option>
+              <option value="json" ${language === 'json' ? 'selected' : ''}>JSON</option>
+              <option value="markdown" ${language === 'markdown' ? 'selected' : ''}>Markdown</option>
+              <option value="yaml" ${language === 'yaml' ? 'selected' : ''}>YAML</option>
+            </select>
+            <button id="saveFileBtn" class="btn btn-primary">Save</button>
+            <button id="saveAsBtn" class="btn btn-secondary">Save As</button>
+          </div>
+          <textarea id="fileEditor" style="width:100%;height:400px;font-family:monospace;font-size:14px;border:1px solid var(--border-color);border-radius:4px;padding:10px;background:var(--card-bg);color:var(--text-color);resize:vertical">${escapeHtml(content)}</textarea>
+          <div style="margin-top:10px;font-size:12px;color:#6b7280">
+            <span id="editorStats">Lines: ${content.split('\n').length}, Characters: ${content.length}</span>
+          </div>
+        </div>
+      `;
+      
+      showModal(editorHtml);
+      
+      const editor = document.getElementById('fileEditor');
+      const stats = document.getElementById('editorStats');
+      const languageSelect = document.getElementById('languageSelect');
+      
+      editor.addEventListener('input', () => {
+        const lines = editor.value.split('\n').length;
+        const chars = editor.value.length;
+        stats.textContent = `Lines: ${lines}, Characters: ${chars}`;
+      });
+      
+      languageSelect.addEventListener('change', () => {
+        // Basic syntax highlighting could be added here
+        editor.focus();
+      });
+      
+      document.getElementById('saveFileBtn').onclick = () => {
+        saveFile(filePath, editor.value);
+      };
+      
+      document.getElementById('saveAsBtn').onclick = () => {
+        const newName = prompt('Save as:', filePath.split('/').pop());
+        if (newName) {
+          const newPath = state.path + (state.path.endsWith('/') ? '' : '/') + newName;
+          saveFile(newPath, editor.value);
+        }
+      };
+      
+      editor.focus();
+    })
+    .catch(e => {
+      console.error('Failed to load file:', e);
+      showModal('<div style="padding:8px"><h3>Error</h3><p>Failed to load file for editing</p></div>');
+    });
+}
+
+function getLanguageFromExtension(ext) {
+  const langMap = {
+    'js': 'javascript', 'jsx': 'javascript', 'ts': 'javascript', 'tsx': 'javascript',
+    'py': 'python', 'pyw': 'python',
+    'sh': 'bash', 'bash': 'bash', 'zsh': 'bash',
+    'ps1': 'powershell', 'psm1': 'powershell',
+    'html': 'html', 'htm': 'html',
+    'css': 'css', 'scss': 'css', 'sass': 'css',
+    'json': 'json',
+    'md': 'markdown', 'markdown': 'markdown',
+    'yml': 'yaml', 'yaml': 'yaml'
+  };
+  return langMap[ext] || 'text';
+}
+
+async function saveFile(filePath, content) {
+  try {
+    const response = await fetch('/api/save', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path: filePath, content: content})
+    });
+    
+    if (!response.ok) {
+      throw new Error('Save failed');
+    }
+    
+    hideModal();
+    load(state.path);
+    showModal('<div style="padding:8px"><h3>Success</h3><p>File saved successfully!</p></div>');
+    setTimeout(hideModal, 1500);
+  } catch (e) {
+    console.error('Save failed:', e);
+    showModal('<div style="padding:8px"><h3>Error</h3><p>Failed to save file</p></div>');
+  }
+}
+
+function showPermissionsDialog() {
+  if (state.selectedFiles.size !== 1) return;
+  const filePath = Array.from(state.selectedFiles)[0];
+  const file = state.files.find(f => f.path === filePath);
+  if (!file) return;
+  
+  fetch('/api/permissions?path=' + encodeURIComponent(filePath))
+    .then(response => {
+      if (!response.ok) throw new Error('Failed to get permissions');
+      return response.json();
+    })
+    .then(data => {
+      const permissionsHtml = `
+        <div style="padding:8px">
+          <h3>Permissions: ${escapeHtml(file.name)}</h3>
+          <div style="margin:15px 0">
+            <h4>POSIX Permissions</h4>
+            <div style="display:grid;grid-template-columns:80px 1fr;gap:10px;align-items:center">
+              <label>Owner:</label>
+              <div>
+                <label><input type="checkbox" id="ownerRead" ${data.permissions.owner.read ? 'checked' : ''}> Read</label>
+                <label><input type="checkbox" id="ownerWrite" ${data.permissions.owner.write ? 'checked' : ''}> Write</label>
+                <label><input type="checkbox" id="ownerExecute" ${data.permissions.owner.execute ? 'checked' : ''}> Execute</label>
+              </div>
+              <label>Group:</label>
+              <div>
+                <label><input type="checkbox" id="groupRead" ${data.permissions.group.read ? 'checked' : ''}> Read</label>
+                <label><input type="checkbox" id="groupWrite" ${data.permissions.group.write ? 'checked' : ''}> Write</label>
+                <label><input type="checkbox" id="groupExecute" ${data.permissions.group.execute ? 'checked' : ''}> Execute</label>
+              </div>
+              <label>Others:</label>
+              <div>
+                <label><input type="checkbox" id="othersRead" ${data.permissions.others.read ? 'checked' : ''}> Read</label>
+                <label><input type="checkbox" id="othersWrite" ${data.permissions.others.write ? 'checked' : ''}> Write</label>
+                <label><input type="checkbox" id="othersExecute" ${data.permissions.others.execute ? 'checked' : ''}> Execute</label>
+              </div>
+            </div>
+            <div style="margin:10px 0">
+              <label>Octal: <input type="text" id="octalPerms" value="${data.octal}" style="width:60px;padding:4px"></label>
+            </div>
+          </div>
+          <div style="margin:15px 0">
+            <h4>Ownership</h4>
+            <div style="display:grid;grid-template-columns:80px 1fr;gap:10px;align-items:center">
+              <label>Owner:</label>
+              <input type="text" id="fileOwner" value="${data.owner}" style="padding:4px">
+              <label>Group:</label>
+              <input type="text" id="fileGroup" value="${data.group}" style="padding:4px">
+            </div>
+          </div>
+          <div style="text-align:right;margin-top:15px">
+            <button id="applyPermissions" class="btn btn-primary">Apply</button>
+            <button onclick="hideModal()" class="btn btn-secondary">Cancel</button>
+          </div>
+        </div>
+      `;
+      
+      showModal(permissionsHtml);
+      
+      document.getElementById('applyPermissions').onclick = () => {
+        applyPermissions(filePath);
+      };
+      
+      // Update octal when checkboxes change
+      const checkboxes = document.querySelectorAll('#modalCard input[type="checkbox"]');
+      checkboxes.forEach(cb => {
+        cb.addEventListener('change', updateOctal);
+      });
+      
+      function updateOctal() {
+        let octal = '';
+        const groups = ['owner', 'group', 'others'];
+        groups.forEach(group => {
+          let value = 0;
+          if (document.getElementById(group + 'Read').checked) value += 4;
+          if (document.getElementById(group + 'Write').checked) value += 2;
+          if (document.getElementById(group + 'Execute').checked) value += 1;
+          octal += value;
+        });
+        document.getElementById('octalPerms').value = octal;
+      }
+    })
+    .catch(e => {
+      console.error('Failed to get permissions:', e);
+      showModal('<div style="padding:8px"><h3>Error</h3><p>Failed to get file permissions</p></div>');
+    });
+}
+
+async function applyPermissions(filePath) {
+  try {
+    const permissions = {
+      owner: {
+        read: document.getElementById('ownerRead').checked,
+        write: document.getElementById('ownerWrite').checked,
+        execute: document.getElementById('ownerExecute').checked
+      },
+      group: {
+        read: document.getElementById('groupRead').checked,
+        write: document.getElementById('groupWrite').checked,
+        execute: document.getElementById('groupExecute').checked
+      },
+      others: {
+        read: document.getElementById('othersRead').checked,
+        write: document.getElementById('othersWrite').checked,
+        execute: document.getElementById('othersExecute').checked
+      }
+    };
+    
+    const owner = document.getElementById('fileOwner').value;
+    const group = document.getElementById('fileGroup').value;
+    
+    const response = await fetch('/api/permissions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        path: filePath,
+        permissions: permissions,
+        owner: owner,
+        group: group
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error('Failed to set permissions');
+    }
+    
+    hideModal();
+    load(state.path);
+    showModal('<div style="padding:8px"><h3>Success</h3><p>Permissions updated successfully!</p></div>');
+    setTimeout(hideModal, 1500);
+  } catch (e) {
+    console.error('Failed to set permissions:', e);
+    showModal('<div style="padding:8px"><h3>Error</h3><p>Failed to set permissions</p></div>');
+  }
+}
+
+function showServerControlPanel() {
+  const serverHtml = `
+    <div style="padding:20px;max-width:800px">
+      <h2>Server Control Panel</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-top:20px">
+        
+        <!-- NFS Server Section -->
+        <div style="border:1px solid var(--border-color);border-radius:8px;padding:20px">
+          <h3 style="margin-top:0;display:flex;align-items:center;gap:10px">
+            <span>🗂️</span> NFS Server
+            <label style="margin-left:auto;font-size:14px">
+              <input type="checkbox" id="nfsEnabled" ${state.servers.nfs.enabled ? 'checked' : ''}> Enabled
+            </label>
+          </h3>
+          <div id="nfsConfig" style="${state.servers.nfs.enabled ? '' : 'opacity:0.5;pointer-events:none'}">
+            <h4>Shares</h4>
+            <div id="nfsShares" style="margin-bottom:15px"></div>
+            <button id="addNfsShare" class="btn btn-secondary" style="font-size:12px">+ Add Share</button>
+          </div>
+        </div>
+        
+        <!-- SMB Server Section -->
+        <div style="border:1px solid var(--border-color);border-radius:8px;padding:20px">
+          <h3 style="margin-top:0;display:flex;align-items:center;gap:10px">
+            <span>💼</span> SMB Server
+            <label style="margin-left:auto;font-size:14px">
+              <input type="checkbox" id="smbEnabled" ${state.servers.smb.enabled ? 'checked' : ''}> Enabled
+            </label>
+          </h3>
+          <div id="smbConfig" style="${state.servers.smb.enabled ? '' : 'opacity:0.5;pointer-events:none'}">
+            <h4>Users</h4>
+            <div id="smbUsers" style="margin-bottom:15px"></div>
+            <button id="addSmbUser" class="btn btn-secondary" style="font-size:12px">+ Add User</button>
+            
+            <h4 style="margin-top:20px">Shares</h4>
+            <div id="smbShares" style="margin-bottom:15px"></div>
+            <button id="addSmbShare" class="btn btn-secondary" style="font-size:12px">+ Add Share</button>
+          </div>
+        </div>
+      </div>
+      
+      <div style="text-align:right;margin-top:30px;padding-top:20px;border-top:1px solid var(--border-color)">
+        <button id="saveServerConfig" class="btn btn-primary">Save Configuration</button>
+        <button onclick="hideModal()" class="btn btn-secondary">Cancel</button>
+      </div>
+    </div>
+  `;
+  
+  showModal(serverHtml);
+  
+  // Render existing shares and users
+  renderNfsShares();
+  renderSmbUsers();
+  renderSmbShares();
+  
+  // Event listeners
+  document.getElementById('nfsEnabled').addEventListener('change', (e) => {
+    state.servers.nfs.enabled = e.target.checked;
+    document.getElementById('nfsConfig').style.opacity = e.target.checked ? '1' : '0.5';
+    document.getElementById('nfsConfig').style.pointerEvents = e.target.checked ? 'auto' : 'none';
+  });
+  
+  document.getElementById('smbEnabled').addEventListener('change', (e) => {
+    state.servers.smb.enabled = e.target.checked;
+    document.getElementById('smbConfig').style.opacity = e.target.checked ? '1' : '0.5';
+    document.getElementById('smbConfig').style.pointerEvents = e.target.checked ? 'auto' : 'none';
+  });
+  
+  document.getElementById('addNfsShare').onclick = addNfsShare;
+  document.getElementById('addSmbUser').onclick = addSmbUser;
+  document.getElementById('addSmbShare').onclick = addSmbShare;
+  document.getElementById('saveServerConfig').onclick = saveServerConfiguration;
+}
+
+function renderNfsShares() {
+  const container = document.getElementById('nfsShares');
+  container.innerHTML = '';
+  
+  state.servers.nfs.shares.forEach((share, index) => {
+    const shareDiv = document.createElement('div');
+    shareDiv.style.cssText = 'display:flex;gap:10px;margin-bottom:10px;align-items:center;padding:10px;background:var(--hover-bg);border-radius:4px';
+    shareDiv.innerHTML = `
+      <input type="text" value="${share.path}" placeholder="folder/path" style="flex:1;padding:4px" data-index="${index}" data-field="path" readonly>
+      <button class="btn btn-secondary" style="font-size:12px;padding:4px 8px" onclick="browseNfsSharePath(${index})">Browse</button>
+      <input type="text" value="${share.options || 'rw,sync,no_subtree_check'}" placeholder="Options" style="flex:1;padding:4px" data-index="${index}" data-field="options">
+      <button class="btn btn-danger" style="font-size:12px;padding:4px 8px" onclick="removeNfsShare(${index})">Remove</button>
+    `;
+    container.appendChild(shareDiv);
+  });
+  
+  // Add event listeners for input changes
+  container.querySelectorAll('input').forEach(input => {
+    input.addEventListener('change', (e) => {
+      const index = parseInt(e.target.dataset.index);
+      const field = e.target.dataset.field;
+      state.servers.nfs.shares[index][field] = e.target.value;
+    });
+  });
+}
+
+function renderSmbUsers() {
+  const container = document.getElementById('smbUsers');
+  container.innerHTML = '';
+  
+  state.servers.smb.users.forEach((user, index) => {
+    const userDiv = document.createElement('div');
+    userDiv.style.cssText = 'display:flex;gap:10px;margin-bottom:10px;align-items:center;padding:10px;background:var(--hover-bg);border-radius:4px';
+    userDiv.innerHTML = `
+      <input type="text" value="${user.username}" placeholder="Username" style="flex:1;padding:4px" data-index="${index}" data-field="username">
+      <input type="password" value="${user.password}" placeholder="Password" style="flex:1;padding:4px" data-index="${index}" data-field="password">
+      <button class="btn btn-danger" style="font-size:12px;padding:4px 8px" onclick="removeSmbUser(${index})">Remove</button>
+    `;
+    container.appendChild(userDiv);
+  });
+  
+  container.querySelectorAll('input').forEach(input => {
+    input.addEventListener('change', (e) => {
+      const index = parseInt(e.target.dataset.index);
+      const field = e.target.dataset.field;
+      state.servers.smb.users[index][field] = e.target.value;
+    });
+  });
+}
+
+function renderSmbShares() {
+  const container = document.getElementById('smbShares');
+  container.innerHTML = '';
+  
+  state.servers.smb.shares.forEach((share, index) => {
+    const shareDiv = document.createElement('div');
+    shareDiv.style.cssText = 'display:flex;gap:10px;margin-bottom:10px;align-items:center;padding:10px;background:var(--hover-bg);border-radius:4px';
+    shareDiv.innerHTML = `
+      <input type="text" value="${share.name}" placeholder="Share Name" style="flex:1;padding:4px" data-index="${index}" data-field="name">
+      <input type="text" value="${share.path}" placeholder="folder/path" style="flex:1;padding:4px" data-index="${index}" data-field="path" readonly>
+      <button class="btn btn-secondary" style="font-size:12px;padding:4px 8px" onclick="browseSmbSharePath(${index})">Browse</button>
+      <select style="padding:4px" data-index="${index}" data-field="access">
+        <option value="rw" ${share.access === 'rw' ? 'selected' : ''}>Read/Write</option>
+        <option value="ro" ${share.access === 'ro' ? 'selected' : ''}>Read Only</option>
+      </select>
+      <button class="btn btn-danger" style="font-size:12px;padding:4px 8px" onclick="removeSmbShare(${index})">Remove</button>
+    `;
+    container.appendChild(shareDiv);
+  });
+  
+  container.querySelectorAll('input, select').forEach(input => {
+    input.addEventListener('change', (e) => {
+      const index = parseInt(e.target.dataset.index);
+      const field = e.target.dataset.field;
+      state.servers.smb.shares[index][field] = e.target.value;
+    });
+  });
+}
+
+function addNfsShare() {
+  showFolderBrowser((selectedPath) => {
+    state.servers.nfs.shares.push({path: selectedPath, options: 'rw,sync,no_subtree_check'});
+    renderNfsShares();
+  });
+}
+
+function addSmbUser() {
+  state.servers.smb.users.push({username: '', password: ''});
+  renderSmbUsers();
+}
+
+function addSmbShare() {
+  showFolderBrowser((selectedPath) => {
+    const shareName = selectedPath.split('/').pop() || 'share';
+    state.servers.smb.shares.push({name: shareName, path: selectedPath, access: 'rw'});
+    renderSmbShares();
+  });
+}
+
+function removeNfsShare(index) {
+  state.servers.nfs.shares.splice(index, 1);
+  renderNfsShares();
+}
+
+function removeSmbUser(index) {
+  state.servers.smb.users.splice(index, 1);
+  renderSmbUsers();
+}
+
+function removeSmbShare(index) {
+  state.servers.smb.shares.splice(index, 1);
+  renderSmbShares();
+}
+
+function browseNfsSharePath(index) {
+  showFolderBrowser((selectedPath) => {
+    state.servers.nfs.shares[index].path = selectedPath;
+    renderNfsShares();
+  });
+}
+
+function browseSmbSharePath(index) {
+  showFolderBrowser((selectedPath) => {
+    state.servers.smb.shares[index].path = selectedPath;
+    renderSmbShares();
+  });
+}
+
+function showFolderBrowser(callback) {
+  const folderHtml = `
+    <div style="padding:20px;max-width:600px">
+      <h2>Select Folder</h2>
+      <div style="margin:20px 0">
+        <div id="folderBreadcrumb" style="margin-bottom:15px;font-size:14px;color:var(--accent-color)"></div>
+        <div id="folderList" style="max-height:400px;overflow-y:auto;border:1px solid var(--border-color);border-radius:4px;padding:10px"></div>
+      </div>
+      <div style="text-align:right;margin-top:20px;padding-top:15px;border-top:1px solid var(--border-color)">
+        <button id="selectFolder" class="btn btn-primary">Select This Folder</button>
+        <button onclick="hideModal()" class="btn btn-secondary">Cancel</button>
+      </div>
+    </div>
+  `;
+  
+  showModal(folderHtml);
+  
+  let currentPath = '';
+  
+  function loadFolders(path = '') {
+    fetch('/api/list?path=' + encodeURIComponent(path))
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) {
+          showToast('Error loading folders: ' + data.error, 'error');
+          return;
+        }
+        
+        currentPath = path;
+        
+        // Update breadcrumb
+        const breadcrumb = document.getElementById('folderBreadcrumb');
+        const pathParts = path ? path.split('/').filter(p => p) : [];
+        let breadcrumbHtml = '<a href="#" onclick="loadFolders(\'\')" style="color:var(--accent-color);text-decoration:none">🏠 Root</a>';
+        let buildPath = '';
+        pathParts.forEach(part => {
+          buildPath += (buildPath ? '/' : '') + part;
+          breadcrumbHtml += ` / <a href="#" onclick="loadFolders(\'${buildPath}\')" style="color:var(--accent-color);text-decoration:none">${part}</a>`;
+        });
+        breadcrumb.innerHTML = breadcrumbHtml;
+        
+        // Update folder list
+        const folderList = document.getElementById('folderList');
+        const folders = data.files ? data.files.filter(item => item.is_dir) : [];
+        
+        if (folders.length === 0) {
+          folderList.innerHTML = '<div style="text-align:center;color:var(--text-color);opacity:0.6;padding:20px">No folders found</div>';
+        } else {
+          folderList.innerHTML = folders.map(folder => {
+            const folderPath = path ? path + '/' + folder.name : folder.name;
+            return `
+              <div style="padding:8px;cursor:pointer;border-radius:4px;display:flex;align-items:center;gap:8px" 
+                   onmouseover="this.style.background='var(--hover-bg)'" 
+                   onmouseout="this.style.background='transparent'" 
+                   onclick="loadFolders('${folderPath}')">
+                <span>📁</span>
+                <span>${folder.name}</span>
+              </div>
+            `;
+          }).join('');
+        }
+      })
+      .catch(e => {
+        showToast('Error loading folders: ' + e.message, 'error');
+      });
+  }
+  
+  // Load initial folders
+  loadFolders();
+  
+  // Select folder button
+  document.getElementById('selectFolder').onclick = () => {
+    callback(currentPath);
+    hideModal();
+  };
+  
+  // Make loadFolders available globally for breadcrumb clicks
+  window.loadFolders = loadFolders;
+}
+
+function saveServerConfiguration() {
+  fetch('/api/server-config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(state.servers)
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      showToast('Server configuration saved successfully', 'success');
+      hideModal();
+    } else {
+      showToast('Error saving configuration: ' + (data.error || 'Unknown error'), 'error');
+    }
+  })
+  .catch(e => {
+    showToast('Error saving configuration: ' + e.message, 'error');
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   console.log('filebrowser: DOM ready');
   initTheme();
@@ -1335,7 +2148,15 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('uploadBtn').onclick = showUploadModal;
   document.getElementById('refresh').onclick = () => load(state.path);
   document.getElementById('mkdir').onclick = createFolder;
+  document.getElementById('toggleHidden').onclick = toggleHiddenFiles;
+  document.getElementById('serverControlBtn').onclick = showServerControlPanel;
   document.getElementById('themeToggle').onclick = toggleTheme;
+  
+  // Initialize hidden files state
+  state.showHidden = localStorage.getItem('showHidden') === 'true';
+  const hiddenBtn = document.getElementById('toggleHidden');
+  hiddenBtn.textContent = state.showHidden ? '🙈' : '👁️';
+  hiddenBtn.title = state.showHidden ? 'Hide hidden files' : 'Show hidden files';
   document.getElementById('selectAllBtn').onclick = selectAll;
   document.getElementById('selectNoneBtn').onclick = clearSelection;
   document.getElementById('openBtn').onclick = () => {
@@ -1388,6 +2209,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
   document.getElementById('propertiesBtn').onclick = showProperties;
+  document.getElementById('editBtn').onclick = () => {
+    if (state.selectedFiles.size === 1) {
+      const path = Array.from(state.selectedFiles)[0];
+      const file = state.files.find(f => f.path === path);
+      if (file && !file.is_dir) {
+        showTextEditor(file.path);
+      }
+    }
+  };
+  document.getElementById('permissionsBtn').onclick = showPermissionsDialog;
   document.getElementById('listViewBtn').onclick = () => setViewMode('list');
   document.getElementById('gridViewBtn').onclick = () => setViewMode('grid');
   document.querySelectorAll('.dropdown-btn').forEach(btn => {
@@ -1476,6 +2307,16 @@ document.addEventListener('DOMContentLoaded', () => {
   };
   document.getElementById('ctxProperties').onclick = () => {
     showProperties();
+    hideContextMenu();
+  };
+  document.getElementById('ctxEdit').onclick = () => {
+    if (state.contextTarget && !state.contextTarget.is_dir) {
+      showTextEditor(state.contextTarget.path);
+    }
+    hideContextMenu();
+  };
+  document.getElementById('ctxPermissions').onclick = () => {
+    showPermissionsDialog();
     hideContextMenu();
   };
   document.getElementById('ctxRefresh').onclick = () => {
@@ -1862,6 +2703,75 @@ class SimpleFileBrowserHandler(BaseHTTPRequestHandler):
 				self.wfile.write(json.dumps({'error':'failed'}).encode())
 				return
 
+		if api == 'edit':
+			p = qs.get('path', ['/'])[0]
+			try:
+				target = self.translate_path_safe(p)
+				if not target.exists() or target.is_dir():
+					self.send_error(404)
+					return
+				with open(target, 'r', encoding='utf-8') as f:
+					content = f.read()
+				self._set_text(200, 'text/plain; charset=utf-8')
+				self.wfile.write(content.encode('utf-8'))
+				return
+			except Exception:
+				self.send_error(500)
+				return
+
+		if api == 'permissions':
+			p = qs.get('path', ['/'])[0]
+			try:
+				target = self.translate_path_safe(p)
+				if not target.exists():
+					self.send_error(404)
+					return
+				file_stat = target.stat()
+				mode = file_stat.st_mode
+				
+				# Get owner and group names
+				try:
+					owner_name = pwd.getpwuid(file_stat.st_uid).pw_name
+				except KeyError:
+					owner_name = str(file_stat.st_uid)
+				
+				try:
+					group_name = grp.getgrgid(file_stat.st_gid).gr_name
+				except KeyError:
+					group_name = str(file_stat.st_gid)
+				
+				permissions = {
+					'owner': {
+						'read': bool(mode & stat.S_IRUSR),
+						'write': bool(mode & stat.S_IWUSR),
+						'execute': bool(mode & stat.S_IXUSR)
+					},
+					'group': {
+						'read': bool(mode & stat.S_IRGRP),
+						'write': bool(mode & stat.S_IWGRP),
+						'execute': bool(mode & stat.S_IXGRP)
+					},
+					'others': {
+						'read': bool(mode & stat.S_IROTH),
+						'write': bool(mode & stat.S_IWOTH),
+						'execute': bool(mode & stat.S_IXOTH)
+					}
+				}
+				
+				octal = oct(stat.S_IMODE(mode))[-3:]
+				
+				self._set_json(200)
+				self.wfile.write(json.dumps({
+					'permissions': permissions,
+					'octal': octal,
+					'owner': owner_name,
+					'group': group_name
+				}).encode())
+				return
+			except Exception:
+				self.send_error(500)
+				return
+
 		self.send_error(404)
 
 	def do_POST(self):
@@ -1956,29 +2866,434 @@ class SimpleFileBrowserHandler(BaseHTTPRequestHandler):
 				self.wfile.write(json.dumps({'error':str(e)}).encode())
 			return
 
+		if path == '/api/move':
+			length = int(self.headers.get('Content-Length',0))
+			body = self.rfile.read(length)
+			obj = json.loads(body)
+			source = obj.get('source')
+			target = obj.get('target')
+			try:
+				source_path = self.translate_path_safe(source)
+				target_path = self.translate_path_safe(target)
+				shutil.move(str(source_path), str(target_path))
+				self._set_json(200)
+				self.wfile.write(json.dumps({'ok':True}).encode())
+			except Exception as e:
+				self._set_json(400)
+				self.wfile.write(json.dumps({'error':str(e)}).encode())
+			return
+
+		if path == '/api/save':
+			length = int(self.headers.get('Content-Length',0))
+			body = self.rfile.read(length)
+			obj = json.loads(body)
+			file_path = obj.get('path')
+			content = obj.get('content')
+			try:
+				target = self.translate_path_safe(file_path)
+				with open(target, 'w', encoding='utf-8') as f:
+					f.write(content)
+				self._set_json(200)
+				self.wfile.write(json.dumps({'ok':True}).encode())
+			except Exception as e:
+				self._set_json(400)
+				self.wfile.write(json.dumps({'error':str(e)}).encode())
+			return
+
+		if path == '/api/permissions':
+			length = int(self.headers.get('Content-Length',0))
+			body = self.rfile.read(length)
+			obj = json.loads(body)
+			file_path = obj.get('path')
+			permissions = obj.get('permissions')
+			owner = obj.get('owner')
+			group = obj.get('group')
+			try:
+				target = self.translate_path_safe(file_path)
+				# Set permissions
+				mode = 0
+				if permissions['owner']['read']: mode |= stat.S_IRUSR
+				if permissions['owner']['write']: mode |= stat.S_IWUSR
+				if permissions['owner']['execute']: mode |= stat.S_IXUSR
+				if permissions['group']['read']: mode |= stat.S_IRGRP
+				if permissions['group']['write']: mode |= stat.S_IWGRP
+				if permissions['group']['execute']: mode |= stat.S_IXGRP
+				if permissions['others']['read']: mode |= stat.S_IROTH
+				if permissions['others']['write']: mode |= stat.S_IWOTH
+				if permissions['others']['execute']: mode |= stat.S_IXOTH
+				os.chmod(target, mode)
+				# Set ownership (requires root privileges)
+				try:
+					uid = pwd.getpwnam(owner).pw_uid if owner else -1
+					gid = grp.getgrnam(group).gr_gid if group else -1
+					if uid != -1 or gid != -1:
+						os.chown(target, uid, gid)
+				except (KeyError, PermissionError):
+					pass  # Ignore ownership errors
+				self._set_json(200)
+				self.wfile.write(json.dumps({'ok':True}).encode())
+			except Exception as e:
+				self._set_json(400)
+				self.wfile.write(json.dumps({'error':str(e)}).encode())
+			return
+
+		if path == '/api/move-multiple':
+			length = int(self.headers.get('Content-Length',0))
+			body = self.rfile.read(length)
+			obj = json.loads(body)
+			sources = obj.get('sources', [])
+			target = obj.get('target')
+			try:
+				target_path = self.translate_path_safe(target)
+				for source in sources:
+					source_path = self.translate_path_safe(source)
+					filename = source_path.name
+					dest_path = target_path / filename
+					shutil.move(str(source_path), str(dest_path))
+				self._set_json(200)
+				self.wfile.write(json.dumps({'ok':True}).encode())
+			except Exception as e:
+				self._set_json(400)
+				self.wfile.write(json.dumps({'error':str(e)}).encode())
+			return
+
+		if path == '/api/server-config':
+			length = int(self.headers.get('Content-Length',0))
+			body = self.rfile.read(length)
+			config = json.loads(body)
+			try:
+				# Save server configuration
+				self.server.server_config = config
+				# Restart servers with new config
+				if hasattr(self.server, 'nfs_server'):
+					self.server.nfs_server.update_config(config.get('nfs', {}))
+				if hasattr(self.server, 'smb_server'):
+					self.server.smb_server.update_config(config.get('smb', {}))
+				self._set_json(200)
+				self.wfile.write(json.dumps({'ok':True}).encode())
+			except Exception as e:
+				self._set_json(400)
+				self.wfile.write(json.dumps({'error':str(e)}).encode())
+			return
+
 		self.send_error(404)
 
-def run_server(host, port, root, auth_password=None):
+class NFSServer:
+	def __init__(self, root_path, use_privileged_ports=False):
+		self.root_path = root_path
+		self.enabled = False
+		self.shares = []
+		self.server_thread = None
+		self.server_socket = None
+		self.running = False
+		self.port = 2049 if use_privileged_ports else 12049
+	
+	def update_config(self, config):
+		self.enabled = config.get('enabled', False)
+		self.shares = config.get('shares', [])
+		if self.enabled:
+			self.start()
+		else:
+			self.stop()
+	
+	def start(self):
+		if not self.shares or self.running:
+			return
+		try:
+			self.running = True
+			self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+			self.server_socket.bind(('0.0.0.0', self.port))
+			self.server_thread = threading.Thread(target=self._run_server, daemon=True)
+			self.server_thread.start()
+			print(f"NFS Server: Started on port {self.port}")
+			for share in self.shares:
+				print(f"  Share: {share.get('path', '')} ({share.get('options', 'rw')})")
+		except Exception as e:
+			print(f"NFS Server error: {e}")
+			self.running = False
+	
+	def _run_server(self):
+		"""Simple NFS-like server implementation"""
+		while self.running:
+			try:
+				data, addr = self.server_socket.recvfrom(8192)
+				if len(data) < 4:
+					continue
+				
+				# Simple RPC-like protocol
+				xid = struct.unpack('>I', data[:4])[0]
+				command = data[4:8].decode('utf-8', errors='ignore').strip()
+				path = data[8:].decode('utf-8', errors='ignore').strip()
+				
+				response = self._handle_nfs_request(command, path)
+				response_data = struct.pack('>I', xid) + response.encode('utf-8')
+				self.server_socket.sendto(response_data, addr)
+			except Exception as e:
+				if self.running:
+					print(f"NFS Server error: {e}")
+	
+	def _handle_nfs_request(self, command, path):
+		"""Handle NFS-like requests"""
+		try:
+			# Check if path is in any share
+			allowed = False
+			share_root = None
+			for share in self.shares:
+				share_path = share.get('path', '').strip('/')
+				if path.startswith(share_path) or path == share_path:
+					allowed = True
+					share_root = share_path
+					break
+			
+			if not allowed:
+				return 'ERROR: Access denied'
+			
+			# Build path relative to root folder
+			relative_path = path.strip('/')
+			full_path = os.path.join(str(self.root_path), relative_path)
+			
+			if command == 'LIST':
+				if os.path.isdir(full_path):
+					items = os.listdir(full_path)
+					return 'OK:' + ','.join(items)
+				else:
+					return 'ERROR: Not a directory'
+			elif command == 'READ':
+				if os.path.isfile(full_path):
+					with open(full_path, 'rb') as f:
+						content = f.read(1024)  # Limit for demo
+						return 'OK:' + base64.b64encode(content).decode()
+				else:
+					return 'ERROR: File not found'
+			elif command == 'STAT':
+				if os.path.exists(full_path):
+					stat_info = os.stat(full_path)
+					return f'OK:{stat_info.st_size},{stat_info.st_mtime},{stat_info.st_mode}'
+				else:
+					return 'ERROR: File not found'
+			else:
+				return 'ERROR: Unknown command'
+		except Exception as e:
+			return f'ERROR: {str(e)}'
+	
+	def stop(self):
+		self.running = False
+		if self.server_socket:
+			self.server_socket.close()
+		if self.server_thread:
+			self.server_thread.join(timeout=1)
+		print("NFS Server: Stopped")
+
+class SMBServer:
+	def __init__(self, root_path, use_privileged_ports=False):
+		self.root_path = root_path
+		self.enabled = False
+		self.shares = []
+		self.users = []
+		self.server_thread = None
+		self.server_socket = None
+		self.running = False
+		self.port = 445 if use_privileged_ports else 1445
+		self.sessions = {}  # Track authenticated sessions
+	
+	def update_config(self, config):
+		self.enabled = config.get('enabled', False)
+		self.shares = config.get('shares', [])
+		self.users = config.get('users', [])
+		if self.enabled:
+			self.start()
+		else:
+			self.stop()
+	
+	def start(self):
+		if not self.shares or self.running:
+			return
+		try:
+			self.running = True
+			self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+			self.server_socket.bind(('0.0.0.0', self.port))
+			self.server_socket.listen(5)
+			self.server_thread = threading.Thread(target=self._run_server, daemon=True)
+			self.server_thread.start()
+			print(f"SMB Server: Started on port {self.port}")
+			for share in self.shares:
+				print(f"  Share: {share.get('name', '')} -> {share.get('path', '')} ({share.get('access', 'rw')})")
+			print(f"  Users: {len(self.users)} configured")
+		except Exception as e:
+			print(f"SMB Server error: {e}")
+			self.running = False
+	
+	def _run_server(self):
+		"""Simple SMB-like server implementation"""
+		while self.running:
+			try:
+				client_socket, addr = self.server_socket.accept()
+				client_thread = threading.Thread(
+					target=self._handle_client,
+					args=(client_socket, addr),
+					daemon=True
+				)
+				client_thread.start()
+			except Exception as e:
+				if self.running:
+					print(f"SMB Server error: {e}")
+	
+	def _handle_client(self, client_socket, addr):
+		"""Handle SMB client connection"""
+		try:
+			session_id = f"{addr[0]}:{addr[1]}"
+			self.sessions[session_id] = {'authenticated': False, 'user': None}
+			
+			while self.running:
+				data = client_socket.recv(4096)
+				if not data:
+					break
+				
+				response = self._handle_smb_request(session_id, data)
+				client_socket.send(response)
+		except Exception as e:
+			print(f"SMB Client error: {e}")
+		finally:
+			if session_id in self.sessions:
+				del self.sessions[session_id]
+			client_socket.close()
+	
+	def _handle_smb_request(self, session_id, data):
+		"""Handle SMB-like requests"""
+		try:
+			if len(data) < 8:
+				return b'ERROR: Invalid request'
+			
+			# Simple protocol: COMMAND:PATH:DATA
+			request = data.decode('utf-8', errors='ignore')
+			parts = request.split(':', 2)
+			command = parts[0] if len(parts) > 0 else ''
+			path = parts[1] if len(parts) > 1 else ''
+			data_part = parts[2] if len(parts) > 2 else ''
+			
+			if command == 'AUTH':
+				# AUTH:username:password
+				creds = path.split(':')
+				if len(creds) == 2:
+					username, password = creds
+					for user in self.users:
+						if user.get('username') == username and user.get('password') == password:
+							self.sessions[session_id]['authenticated'] = True
+							self.sessions[session_id]['user'] = username
+							return b'OK: Authenticated'
+				return b'ERROR: Authentication failed'
+			
+			if not self.sessions[session_id]['authenticated']:
+				return b'ERROR: Not authenticated'
+			
+			if command == 'SHARES':
+				share_list = []
+				for share in self.shares:
+					share_list.append(f"{share.get('name', '')}:{share.get('path', '')}:{share.get('access', 'rw')}")
+				return ('OK:' + ','.join(share_list)).encode('utf-8')
+			
+			elif command == 'LIST':
+				# Find share and list directory
+				share_path = self._get_share_path(path)
+				if not share_path:
+					return b'ERROR: Share not found'
+				
+				# Build path relative to root folder
+				relative_path = share_path.strip('/')
+				full_path = os.path.join(str(self.root_path), relative_path)
+				if os.path.isdir(full_path):
+					items = os.listdir(full_path)
+					return ('OK:' + ','.join(items)).encode('utf-8')
+				else:
+					return b'ERROR: Not a directory'
+			
+			elif command == 'READ':
+				share_path = self._get_share_path(path)
+				if not share_path:
+					return b'ERROR: Share not found'
+				
+				# Build path relative to root folder
+				relative_path = share_path.strip('/')
+				full_path = os.path.join(str(self.root_path), relative_path)
+				if os.path.isfile(full_path):
+					with open(full_path, 'rb') as f:
+						content = f.read(8192)  # Limit for demo
+						return b'OK:' + base64.b64encode(content)
+				else:
+					return b'ERROR: File not found'
+			
+			else:
+				return b'ERROR: Unknown command'
+			
+		except Exception as e:
+			return f'ERROR: {str(e)}'.encode('utf-8')
+	
+	def _get_share_path(self, requested_path):
+		"""Get the actual path for a share (relative to root)"""
+		for share in self.shares:
+			share_name = share.get('name', '')
+			if requested_path.startswith(share_name) or requested_path == share_name:
+				# Return path relative to root folder
+				share_path = share.get('path', '').strip('/')
+				# If requesting a subpath within the share
+				if len(requested_path) > len(share_name) and requested_path.startswith(share_name + '/'):
+					subpath = requested_path[len(share_name):].strip('/')
+					return os.path.join(share_path, subpath) if subpath else share_path
+				return share_path
+		return None
+	
+	def stop(self):
+		self.running = False
+		if self.server_socket:
+			self.server_socket.close()
+		if self.server_thread:
+			self.server_thread.join(timeout=1)
+		print("SMB Server: Stopped")
+
+def run_server(host, port, root, auth_password=None, use_privileged_ports=False):
 	server_address = (host, port)
 	httpd = ThreadingHTTPServer(server_address, SimpleFileBrowserHandler)
 	httpd.root_path = Path(root).resolve()
 	httpd.auth_password = auth_password
+	httpd.server_config = {'nfs': {'enabled': False, 'shares': []}, 'smb': {'enabled': False, 'shares': [], 'users': []}}
+	
+	# Initialize NFS and SMB servers
+	httpd.nfs_server = NFSServer(httpd.root_path, use_privileged_ports)
+	httpd.smb_server = SMBServer(httpd.root_path, use_privileged_ports)
+	
 	sa = httpd.socket.getsockname()
 	print(f"Serving {httpd.root_path} on http://{sa[0]}:{sa[1]}")
+	print(f"NFS/SMB Server Control Panel available at the 🖥️ Servers button")
+	nfs_port = 2049 if use_privileged_ports else 12049
+	smb_port = 445 if use_privileged_ports else 1445
+	port_type = "standard" if use_privileged_ports else "non-privileged"
+	print(f"NFS will run on port {nfs_port}, SMB on port {smb_port} ({port_type} ports)")
+	if use_privileged_ports:
+		print("⚠️  Using privileged ports - ensure you're running as root")
 	try:
 		httpd.serve_forever()
 	except KeyboardInterrupt:
 		print('Shutting down')
+		httpd.nfs_server.stop()
+		httpd.smb_server.stop()
 		httpd.server_close()
 
 if __name__ == '__main__':
 	p = argparse.ArgumentParser(description='Start a simple web file browser')
 	p.add_argument('--host', default='127.0.0.1', help='Host to bind (default 127.0.0.1)')
-	p.add_argument('--port', '-p', type=int, default=8000, help='Port to listen on')
+	p.add_argument('--port', type=int, default=8000, help='HTTP port to listen on (default 8000)')
 	p.add_argument('--root', '-r', default='.', help='Root path to serve')
 	p.add_argument('--auth', help='Set a simple password for basic auth (username optional, provide password or user:password)')
+	p.add_argument('--privileged-ports', '-p', action='store_true', help='Use standard NFS (2049) and SMB (445) ports (requires root)')
 	p.add_argument('--open', dest='open', action='store_true', help='Open in default browser')
 	args = p.parse_args()
+	
+	# Check for root privileges when using privileged ports
+	if args.privileged_ports and os.getuid() != 0:
+		print('⚠️  Warning: --privileged-ports requires root privileges for ports 2049 and 445')
+		print('   Consider running with sudo or use default non-privileged ports')
+	
 	root = Path(args.root).resolve()
 	if not root.exists():
 		print('Root does not exist', root)
@@ -1986,4 +3301,4 @@ if __name__ == '__main__':
 	if args.open:
 		import webbrowser
 		webbrowser.open(f'http://{args.host}:{args.port}/')
-	run_server(args.host, args.port, root, auth_password=args.auth)
+	run_server(args.host, args.port, root, auth_password=args.auth, use_privileged_ports=args.privileged_ports)
