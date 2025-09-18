@@ -1836,50 +1836,205 @@ async function applyPermissions(filePath) {
 
 function showServerControlPanel() {
   const serverHtml = `
-    <div style="padding:20px;max-width:800px">
-      <h2>Server Control Panel</h2>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-top:20px">
-        
-        <!-- NFS Server Section -->
-        <div style="border:1px solid var(--border-color);border-radius:8px;padding:20px">
-          <h3 style="margin-top:0;display:flex;align-items:center;gap:10px">
-            <span>🗂️</span> NFS Server
-            <label style="margin-left:auto;font-size:14px">
-              <input type="checkbox" id="nfsEnabled" ${state.servers.nfs.enabled ? 'checked' : ''}> Enabled
-            </label>
-          </h3>
-          <div id="nfsConfig" style="${state.servers.nfs.enabled ? '' : 'opacity:0.5;pointer-events:none'}">
-            <h4>Shares</h4>
-            <div id="nfsShares" style="margin-bottom:15px"></div>
-            <button id="addNfsShare" class="btn btn-secondary" style="font-size:12px">+ Add Share</button>
-          </div>
+    <div style="padding:20px;max-width:900px">
+      <h2 style="margin-top:0;display:flex;align-items:center;gap:10px">
+        <span>🛠️</span> Server Configuration
+      </h2>
+      
+      <!-- Tab Navigation -->
+      <div class="tabs" style="display:flex;border-bottom:1px solid var(--border-color);margin-bottom:20px">
+        <button class="tab-btn active" data-tab="nfs-tab" style="padding:10px 20px;border:none;background:none;cursor:pointer;border-bottom:2px solid var(--accent-color);color:var(--accent-color)">
+          🗂️ NFS Server
+        </button>
+        <button class="tab-btn" data-tab="smb-tab" style="padding:10px 20px;border:none;background:none;cursor:pointer;color:var(--text-color);opacity:0.7">
+          💼 SMB Server
+        </button>
+      </div>
+      
+      <!-- NFS Tab Content -->
+      <div id="nfs-tab" class="tab-content" style="display:block">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+          <h3 style="margin:0">NFS Server Settings</h3>
+          <label class="switch">
+            <input type="checkbox" id="nfsEnabled" ${state.servers.nfs.enabled ? 'checked' : ''}>
+            <span class="slider round"></span>
+            <span style="margin-left:10px;font-weight:500">${state.servers.nfs.enabled ? 'Enabled' : 'Disabled'}</span>
+          </label>
         </div>
         
-        <!-- SMB Server Section -->
-        <div style="border:1px solid var(--border-color);border-radius:8px;padding:20px">
-          <h3 style="margin-top:0;display:flex;align-items:center;gap:10px">
-            <span>💼</span> SMB Server
-            <label style="margin-left:auto;font-size:14px">
-              <input type="checkbox" id="smbEnabled" ${state.servers.smb.enabled ? 'checked' : ''}> Enabled
-            </label>
-          </h3>
-          <div id="smbConfig" style="${state.servers.smb.enabled ? '' : 'opacity:0.5;pointer-events:none'}">
-            <h4>Users</h4>
-            <div id="smbUsers" style="margin-bottom:15px"></div>
-            <button id="addSmbUser" class="btn btn-secondary" style="font-size:12px">+ Add User</button>
-            
-            <h4 style="margin-top:20px">Shares</h4>
-            <div id="smbShares" style="margin-bottom:15px"></div>
-            <button id="addSmbShare" class="btn btn-secondary" style="font-size:12px">+ Add Share</button>
+        <div id="nfsConfig" style="${state.servers.nfs.enabled ? '' : 'opacity:0.5;pointer-events:none'}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px">
+            <h4 style="margin:0">Shared Directories</h4>
+            <button id="addNfsShare" class="btn btn-primary" style="font-size:13px;padding:6px 12px">
+              <span style="font-size:16px;margin-right:5px">+</span> Add Share
+            </button>
+          </div>
+          
+          <div id="nfsShares" style="margin-bottom:20px">
+            ${state.servers.nfs.shares.length === 0 ? `
+              <div style="text-align:center;padding:30px;background:var(--hover-bg);border-radius:8px;color:var(--text-color);opacity:0.7">
+                No NFS shares configured. Click "Add Share" to get started.
+              </div>
+            ` : ''}
+          </div>
+          
+          <div class="card" style="background:var(--hover-bg);padding:15px;border-radius:8px;margin-top:20px">
+            <h4 style="margin-top:0">Connection Information</h4>
+            <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;font-family:monospace;font-size:13px">
+              <div style="opacity:0.7">Server IP:</div>
+              <div>${window.location.hostname}</div>
+              <div style="opacity:0.7">Port:</div>
+              <div>2049</div>
+              <div style="opacity:0.7">Example:</div>
+              <div>mount -t nfs ${window.location.hostname}:/path/to/share /mnt/nfs</div>
+            </div>
           </div>
         </div>
       </div>
       
-      <div style="text-align:right;margin-top:30px;padding-top:20px;border-top:1px solid var(--border-color)">
-        <button id="saveServerConfig" class="btn btn-primary">Save Configuration</button>
-        <button onclick="hideModal()" class="btn btn-secondary">Cancel</button>
+      <!-- SMB Tab Content -->
+      <div id="smb-tab" class="tab-content" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+          <h3 style="margin:0">SMB Server Settings</h3>
+          <label class="switch">
+            <input type="checkbox" id="smbEnabled" ${state.servers.smb.enabled ? 'checked' : ''}>
+            <span class="slider round"></span>
+            <span style="margin-left:10px;font-weight:500">${state.servers.smb.enabled ? 'Enabled' : 'Disabled'}</span>
+          </label>
+        </div>
+        
+        <div id="smbConfig" style="${state.servers.smb.enabled ? '' : 'opacity:0.5;pointer-events:none'}">
+          <!-- Users Section -->
+          <div class="card" style="margin-bottom:25px;border:1px solid var(--border-color);border-radius:8px;overflow:hidden">
+            <div style="background:var(--hover-bg);padding:12px 15px;border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center">
+              <h4 style="margin:0">Users</h4>
+              <button id="addSmbUser" class="btn btn-secondary" style="font-size:13px;padding:4px 10px">
+                <span style="font-size:14px;margin-right:5px">+</span> Add User
+              </button>
+            </div>
+            <div id="smbUsers" style="padding:10px">
+              ${state.servers.smb.users.length === 0 ? `
+                <div style="text-align:center;padding:20px;color:var(--text-color);opacity:0.7">
+                  No SMB users configured. Add a user to enable access to shares.
+                </div>
+              ` : ''}
+            </div>
+          </div>
+          
+          <!-- Shares Section -->
+          <div class="card" style="border:1px solid var(--border-color);border-radius:8px;overflow:hidden">
+            <div style="background:var(--hover-bg);padding:12px 15px;border-bottom:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center">
+              <h4 style="margin:0">Shared Directories</h4>
+              <button id="addSmbShare" class="btn btn-primary" style="font-size:13px;padding:4px 10px">
+                <span style="font-size:14px;margin-right:5px">+</span> Add Share
+              </button>
+            </div>
+            <div id="smbShares" style="padding:10px">
+              ${state.servers.smb.shares.length === 0 ? `
+                <div style="text-align:center;padding:20px;color:var(--text-color);opacity:0.7">
+                  No SMB shares configured. Add a share to make directories available.
+                </div>
+              ` : ''}
+            </div>
+          </div>
+          
+          <!-- Connection Info -->
+          <div class="card" style="background:var(--hover-bg);padding:15px;border-radius:8px;margin-top:20px">
+            <h4 style="margin-top:0">Connection Information</h4>
+            <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;font-family:monospace;font-size:13px">
+              <div style="opacity:0.7">Server:</div>
+              <div>\\\\${window.location.hostname}</div>
+              <div style="opacity:0.7">Port:</div>
+              <div>445</div>
+              <div style="opacity:0.7">Example:</div>
+              <div>net use Z: \\\\${window.location.hostname}\sharename /user:username</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div style="text-align:right;margin-top:30px;padding-top:20px;border-top:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:13px;color:var(--text-color);opacity:0.7">
+          Changes will take effect after saving and restarting the server.
+        </div>
+        <div>
+          <button onclick="hideModal()" class="btn btn-secondary" style="margin-right:10px">Cancel</button>
+          <button id="saveServerConfig" class="btn btn-primary">Save Configuration</button>
+        </div>
       </div>
     </div>
+    
+    <style>
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 50px;
+        height: 24px;
+        vertical-align: middle;
+      }
+      .switch input { 
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: #ccc;
+        transition: .4s;
+        border-radius: 24px;
+      }
+      .slider:before {
+        position: absolute;
+        content: "";
+        height: 16px;
+        width: 16px;
+        left: 4px;
+        bottom: 4px;
+        background-color: white;
+        transition: .4s;
+        border-radius: 50%;
+      }
+      input:checked + .slider {
+        background-color: var(--accent-color);
+      }
+      input:focus + .slider {
+        box-shadow: 0 0 1px var(--accent-color);
+      }
+      input:checked + .slider:before {
+        transform: translateX(26px);
+      }
+      .tab-btn {
+        padding: 10px 20px;
+        border: none;
+        background: none;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-color);
+        opacity: 0.7;
+        border-bottom: 2px solid transparent;
+        transition: all 0.2s;
+      }
+      .tab-btn:hover {
+        opacity: 1;
+      }
+      .tab-btn.active {
+        opacity: 1;
+        color: var(--accent-color);
+        border-bottom-color: var(--accent-color);
+      }
+      .card {
+        background: var(--card-bg);
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        overflow: hidden;
+      }
+    </style>
   `;
   
   showModal(serverHtml);
@@ -1889,19 +2044,51 @@ function showServerControlPanel() {
   renderSmbUsers();
   renderSmbShares();
   
-  // Event listeners
+  // Tab switching
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      // Update active tab
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      
+      // Show corresponding tab content
+      document.querySelectorAll('.tab-content').forEach(content => {
+        content.style.display = 'none';
+      });
+      document.getElementById(btn.dataset.tab).style.display = 'block';
+    });
+  });
+  
+  // Toggle server status
+  const updateServerStatus = (serverType, enabled) => {
+    const configDiv = document.getElementById(`${serverType}Config`);
+    if (enabled) {
+      configDiv.style.opacity = '1';
+      configDiv.style.pointerEvents = 'auto';
+    } else {
+      configDiv.style.opacity = '0.5';
+      configDiv.style.pointerEvents = 'none';
+    }
+    // Update the status text
+    const statusSpan = document.querySelector(`#${serverType}Enabled`).nextElementSibling.nextElementSibling;
+    statusSpan.textContent = enabled ? 'Enabled' : 'Disabled';
+  };
+  
   document.getElementById('nfsEnabled').addEventListener('change', (e) => {
     state.servers.nfs.enabled = e.target.checked;
-    document.getElementById('nfsConfig').style.opacity = e.target.checked ? '1' : '0.5';
-    document.getElementById('nfsConfig').style.pointerEvents = e.target.checked ? 'auto' : 'none';
+    updateServerStatus('nfs', e.target.checked);
   });
   
   document.getElementById('smbEnabled').addEventListener('change', (e) => {
     state.servers.smb.enabled = e.target.checked;
-    document.getElementById('smbConfig').style.opacity = e.target.checked ? '1' : '0.5';
-    document.getElementById('smbConfig').style.pointerEvents = e.target.checked ? 'auto' : 'none';
+    updateServerStatus('smb', e.target.checked);
   });
   
+  // Initialize server status display
+  updateServerStatus('nfs', state.servers.nfs.enabled);
+  updateServerStatus('smb', state.servers.smb.enabled);
+  
+  // Button event listeners
   document.getElementById('addNfsShare').onclick = addNfsShare;
   document.getElementById('addSmbUser').onclick = addSmbUser;
   document.getElementById('addSmbShare').onclick = addSmbShare;
@@ -1910,116 +2097,438 @@ function showServerControlPanel() {
 
 function renderNfsShares() {
   const container = document.getElementById('nfsShares');
-  container.innerHTML = '';
+  if (!container) return;
+  
+  if (state.servers.nfs.shares.length === 0) {
+    container.innerHTML = `
+      <div style="text-align:center;padding:20px;color:var(--text-color);opacity:0.7">
+        No NFS shares configured. Click "Add Share" to get started.
+      </div>
+    `;
+    return;
+  }
+  
+  container.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 200px 100px;gap:10px;margin-bottom:10px;font-weight:500;padding:8px 0;border-bottom:1px solid var(--border-color)">
+      <div>Path</div>
+      <div>Options</div>
+      <div>Actions</div>
+    </div>
+  `;
   
   state.servers.nfs.shares.forEach((share, index) => {
     const shareDiv = document.createElement('div');
-    shareDiv.style.cssText = 'display:flex;gap:10px;margin-bottom:10px;align-items:center;padding:10px;background:var(--hover-bg);border-radius:4px';
+    shareDiv.style.cssText = 'display:grid;grid-template-columns:1fr 200px 100px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px dashed var(--border-color)';
     shareDiv.innerHTML = `
-      <input type="text" value="${share.path}" placeholder="folder/path" style="flex:1;padding:4px" data-index="${index}" data-field="path" readonly>
-      <button class="btn btn-secondary" style="font-size:12px;padding:4px 8px" onclick="browseNfsSharePath(${index})">Browse</button>
-      <input type="text" value="${share.options || 'rw,sync,no_subtree_check'}" placeholder="Options" style="flex:1;padding:4px" data-index="${index}" data-field="options">
-      <button class="btn btn-danger" style="font-size:12px;padding:4px 8px" onclick="removeNfsShare(${index})">Remove</button>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span>📁</span>
+        <input type="text" 
+               value="${share.path}" 
+               placeholder="/path/to/share" 
+               style="flex:1;padding:6px 10px;border:1px solid var(--border-color);border-radius:4px;background:var(--card-bg);color:var(--text-color)" 
+               data-index="${index}" 
+               data-field="path" 
+               readonly>
+        <button class="btn btn-secondary" 
+                style="padding:6px 10px;min-width:80px" 
+                onclick="browseNfsSharePath(${index})">
+          Browse...
+        </button>
+      </div>
+      <div>
+        <input type="text" 
+               value="${share.options || 'rw,sync,no_subtree_check'}" 
+               placeholder="Options" 
+               style="width:100%;padding:6px 10px;border:1px solid var(--border-color);border-radius:4px;background:var(--card-bg);color:var(--text-color)" 
+               data-index="${index}" 
+               data-field="options">
+      </div>
+      <div>
+        <button class="btn btn-danger" 
+                style="width:100%;padding:6px 10px" 
+                onclick="if(confirm('Are you sure you want to remove this NFS share?')) removeNfsShare(${index})">
+          Remove
+        </button>
+      </div>
     `;
     container.appendChild(shareDiv);
-  });
-  
-  // Add event listeners for input changes
-  container.querySelectorAll('input').forEach(input => {
-    input.addEventListener('change', (e) => {
-      const index = parseInt(e.target.dataset.index);
-      const field = e.target.dataset.field;
-      state.servers.nfs.shares[index][field] = e.target.value;
+    
+    // Add event listeners for input changes
+    shareDiv.querySelectorAll('input').forEach(input => {
+      input.addEventListener('change', (e) => {
+        const index = parseInt(e.target.dataset.index);
+        const field = e.target.dataset.field;
+        state.servers.nfs.shares[index][field] = e.target.value;
+      });
     });
   });
 }
 
 function renderSmbUsers() {
   const container = document.getElementById('smbUsers');
-  container.innerHTML = '';
+  if (!container) return;
+  
+  if (state.servers.smb.users.length === 0) {
+    container.innerHTML = `
+      <div style="text-align:center;padding:20px;color:var(--text-color);opacity:0.7">
+        No SMB users configured. Add a user to enable access to shares.
+      </div>
+    `;
+    return;
+  }
+  
+  container.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr 100px;gap:10px;margin-bottom:10px;font-weight:500;padding:8px 0;border-bottom:1px solid var(--border-color)">
+      <div>Username</div>
+      <div>Password</div>
+      <div>Actions</div>
+    </div>
+  `;
   
   state.servers.smb.users.forEach((user, index) => {
     const userDiv = document.createElement('div');
-    userDiv.style.cssText = 'display:flex;gap:10px;margin-bottom:10px;align-items:center;padding:10px;background:var(--hover-bg);border-radius:4px';
+    userDiv.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 100px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px dashed var(--border-color)';
+    
     userDiv.innerHTML = `
-      <input type="text" value="${user.username}" placeholder="Username" style="flex:1;padding:4px" data-index="${index}" data-field="username">
-      <input type="password" value="${user.password}" placeholder="Password" style="flex:1;padding:4px" data-index="${index}" data-field="password">
-      <button class="btn btn-danger" style="font-size:12px;padding:4px 8px" onclick="removeSmbUser(${index})">Remove</button>
+      <div>
+        <input type="text" 
+               value="${user.username}" 
+               placeholder="Username" 
+               style="width:100%;padding:6px 10px;border:1px solid var(--border-color);border-radius:4px;background:var(--card-bg);color:var(--text-color)" 
+               data-index="${index}" 
+               data-field="username"
+               required>
+      </div>
+      <div>
+        <input type="password" 
+               value="${user.password}" 
+               placeholder="Password" 
+               style="width:100%;padding:6px 10px;border:1px solid var(--border-color);border-radius:4px;background:var(--card-bg);color:var(--text-color)" 
+               data-index="${index}" 
+               data-field="password"
+               required>
+      </div>
+      <div>
+        <button class="btn btn-danger" 
+                style="width:100%;padding:6px 10px" 
+                onclick="if(confirm('Are you sure you want to remove this user?')) removeSmbUser(${index})">
+          Remove
+        </button>
+      </div>
     `;
     container.appendChild(userDiv);
-  });
-  
-  container.querySelectorAll('input').forEach(input => {
-    input.addEventListener('change', (e) => {
-      const index = parseInt(e.target.dataset.index);
-      const field = e.target.dataset.field;
-      state.servers.smb.users[index][field] = e.target.value;
+    
+    // Add event listeners for input changes
+    userDiv.querySelectorAll('input').forEach(input => {
+      input.addEventListener('change', (e) => {
+        const index = parseInt(e.target.dataset.index);
+        const field = e.target.dataset.field;
+        state.servers.smb.users[index][field] = e.target.value;
+      });
+      
+      // Add validation
+      input.addEventListener('blur', (e) => {
+        if (e.target.required && !e.target.value.trim()) {
+          e.target.style.borderColor = 'var(--danger-color)';
+        } else {
+          e.target.style.borderColor = 'var(--border-color)';
+        }
+      });
     });
   });
 }
 
 function renderSmbShares() {
   const container = document.getElementById('smbShares');
-  container.innerHTML = '';
+  if (!container) return;
+  
+  if (state.servers.smb.shares.length === 0) {
+    container.innerHTML = `
+      <div style="text-align:center;padding:20px;color:var(--text-color);opacity:0.7">
+        No SMB shares configured. Add a share to make directories available.
+      </div>
+    `;
+    return;
+  }
+  
+  container.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr 120px 120px 100px;gap:10px;margin-bottom:10px;font-weight:500;padding:8px 0;border-bottom:1px solid var(--border-color)">
+      <div>Share Name</div>
+      <div>Path</div>
+      <div>Access</div>
+      <div>Users</div>
+      <div>Actions</div>
+    </div>
+  `;
   
   state.servers.smb.shares.forEach((share, index) => {
     const shareDiv = document.createElement('div');
-    shareDiv.style.cssText = 'display:flex;gap:10px;margin-bottom:10px;align-items:center;padding:10px;background:var(--hover-bg);border-radius:4px';
+    shareDiv.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 120px 120px 100px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px dashed var(--border-color)';
+    
+    // Get list of users with access to this share
+    const userList = (share.users || []).length > 0 
+      ? share.users.join(', ') 
+      : 'All users';
+    
     shareDiv.innerHTML = `
-      <input type="text" value="${share.name}" placeholder="Share Name" style="flex:1;padding:4px" data-index="${index}" data-field="name">
-      <input type="text" value="${share.path}" placeholder="folder/path" style="flex:1;padding:4px" data-index="${index}" data-field="path" readonly>
-      <button class="btn btn-secondary" style="font-size:12px;padding:4px 8px" onclick="browseSmbSharePath(${index})">Browse</button>
-      <select style="padding:4px" data-index="${index}" data-field="access">
-        <option value="rw" ${share.access === 'rw' ? 'selected' : ''}>Read/Write</option>
-        <option value="ro" ${share.access === 'ro' ? 'selected' : ''}>Read Only</option>
-      </select>
-      <button class="btn btn-danger" style="font-size:12px;padding:4px 8px" onclick="removeSmbShare(${index})">Remove</button>
+      <div>
+        <input type="text" 
+               value="${share.name}" 
+               placeholder="Share Name" 
+               style="width:100%;padding:6px 10px;border:1px solid var(--border-color);border-radius:4px;background:var(--card-bg);color:var(--text-color)" 
+               data-index="${index}" 
+               data-field="name"
+               required>
+      </div>
+      <div style="display:flex;gap:8px">
+        <input type="text" 
+               value="${share.path}" 
+               placeholder="/path/to/share" 
+               style="flex:1;padding:6px 10px;border:1px solid var(--border-color);border-radius:4px;background:var(--card-bg);color:var(--text-color)" 
+               data-index="${index}" 
+               data-field="path" 
+               readonly>
+        <button class="btn btn-secondary" 
+                style="padding:6px 10px;min-width:80px" 
+                onclick="browseSmbSharePath(${index})">
+          Browse...
+        </button>
+      </div>
+      <div>
+        <select style="width:100%;padding:6px 10px;border:1px solid var(--border-color);border-radius:4px;background:var(--card-bg);color:var(--text-color)" 
+                data-index="${index}" 
+                data-field="access">
+          <option value="ro" ${share.access === 'ro' ? 'selected' : ''}>Read Only</option>
+          <option value="rw" ${share.access === 'rw' ? 'selected' : ''}>Read/Write</option>
+        </select>
+      </div>
+      <div title="${userList}" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+        ${userList}
+      </div>
+      <div>
+        <button class="btn btn-danger" 
+                style="width:100%;padding:6px 10px" 
+                onclick="if(confirm('Are you sure you want to remove this share?')) removeSmbShare(${index})">
+          Remove
+        </button>
+      </div>
     `;
     container.appendChild(shareDiv);
-  });
-  
-  container.querySelectorAll('input, select').forEach(input => {
-    input.addEventListener('change', (e) => {
-      const index = parseInt(e.target.dataset.index);
-      const field = e.target.dataset.field;
-      state.servers.smb.shares[index][field] = e.target.value;
+    
+    // Add event listeners for input changes
+    shareDiv.querySelectorAll('input, select').forEach(input => {
+      input.addEventListener('change', (e) => {
+        const index = parseInt(e.target.dataset.index);
+        const field = e.target.dataset.field;
+        state.servers.smb.shares[index][field] = e.target.value;
+      });
+      
+      // Add validation for required fields
+      if (input.required) {
+        input.addEventListener('blur', (e) => {
+          if (!e.target.value.trim()) {
+            e.target.style.borderColor = 'var(--danger-color)';
+          } else {
+            e.target.style.borderColor = 'var(--border-color)';
+          }
+        });
+      }
     });
   });
 }
 
 function addNfsShare() {
+  // Check if we can add more shares (optional: implement a limit)
+  const maxShares = 10; // Example limit
+  if (state.servers.nfs.shares.length >= maxShares) {
+    showToast(`Maximum of ${maxShares} NFS shares allowed`, 'error');
+    return;
+  }
+  
+  // Show folder browser with a callback
   showFolderBrowser((selectedPath) => {
-    state.servers.nfs.shares.push({path: selectedPath, options: 'rw,sync,no_subtree_check'});
+    if (!selectedPath) return; // User cancelled
+    
+    // Check if this path is already shared
+    const isDuplicate = state.servers.nfs.shares.some(share => 
+      share.path === selectedPath
+    );
+    
+    if (isDuplicate) {
+      showToast('This path is already shared', 'error');
+      return;
+    }
+    
+    // Add the new share
+    state.servers.nfs.shares.push({
+      path: selectedPath, 
+      options: 'rw,sync,no_subtree_check',
+      comment: ''
+    });
+    
+    // Re-render the shares list
     renderNfsShares();
+    showToast('NFS share added', 'success');
   });
 }
 
 function addSmbUser() {
-  state.servers.smb.users.push({username: '', password: ''});
+  // Check if we can add more users (optional: implement a limit)
+  const maxUsers = 20; // Example limit
+  if (state.servers.smb.users.length >= maxUsers) {
+    showToast(`Maximum of ${maxUsers} SMB users allowed`, 'error');
+    return;
+  }
+  
+  // Add a new user with default values
+  state.servers.smb.users.push({
+    username: `user${state.servers.smb.users.length + 1}`,
+    password: '',
+    enabled: true
+  });
+  
+  // Re-render the users list
   renderSmbUsers();
+  
+  // Scroll to the bottom to show the new user
+  const container = document.getElementById('smbUsers');
+  if (container) {
+    container.scrollTop = container.scrollHeight;
+    
+    // Focus the username field of the newly added user
+    const inputs = container.querySelectorAll('input[data-field="username"]');
+    if (inputs.length > 0) {
+      inputs[inputs.length - 1].focus();
+    }
+  }
+  
+  showToast('New user added. Please set a password.', 'info');
 }
 
 function addSmbShare() {
+  // Check if we can add more shares (optional: implement a limit)
+  const maxShares = 20; // Example limit
+  if (state.servers.smb.shares.length >= maxShares) {
+    showToast(`Maximum of ${maxShares} SMB shares allowed`, 'error');
+    return;
+  }
+  
+  // Show folder browser to select the share path
   showFolderBrowser((selectedPath) => {
-    const shareName = selectedPath.split('/').pop() || 'share';
-    state.servers.smb.shares.push({name: shareName, path: selectedPath, access: 'rw'});
+    if (!selectedPath) return; // User cancelled
+    
+    // Generate a default share name from the last part of the path
+    let shareName = selectedPath.split('/').filter(Boolean).pop() || 'share';
+    
+    // Clean up the share name to be SMB compatible
+    shareName = shareName
+      .replace(/[^a-zA-Z0-9_-]/g, '_') // Replace special chars with underscore
+      .toLowerCase()
+      .substring(0, 15); // Limit length
+    
+    // Ensure the share name is unique
+    let counter = 1;
+    let baseName = shareName;
+    while (state.servers.smb.shares.some(share => share.name === shareName)) {
+      shareName = `${baseName}${counter}`;
+      counter++;
+      
+      // Prevent infinite loops
+      if (counter > 100) {
+        showToast('Too many similar share names', 'error');
+        return;
+      }
+    }
+    
+    // Check if this path is already shared
+    const isDuplicate = state.servers.smb.shares.some(share => 
+      share.path === selectedPath
+    );
+    
+    if (isDuplicate) {
+      showToast('This path is already shared', 'error');
+      return;
+    }
+    
+    // Add the new share with default values
+    state.servers.smb.shares.push({
+      name: shareName,
+      path: selectedPath,
+      access: 'rw',
+      browseable: true,
+      guest_ok: false,
+      comment: '',
+      users: [] // Empty array means all users can access
+    });
+    
+    // Re-render the shares list
     renderSmbShares();
+    showToast('SMB share added', 'success');
   });
 }
 
 function removeNfsShare(index) {
+  if (index < 0 || index >= state.servers.nfs.shares.length) return;
+  
+  const share = state.servers.nfs.shares[index];
+  
+  // Show confirmation dialog
+  if (!confirm(`Are you sure you want to remove the NFS share for '${share.path}'?`)) {
+    return;
+  }
+  
+  // Remove the share
   state.servers.nfs.shares.splice(index, 1);
+  
+  // Re-render the shares list
   renderNfsShares();
+  showToast('NFS share removed', 'success');
 }
 
 function removeSmbUser(index) {
+  if (index < 0 || index >= state.servers.smb.users.length) return;
+  
+  const user = state.servers.smb.users[index];
+  
+  // Check if this user is used in any shares
+  const usedInShares = state.servers.smb.shares.some(share => 
+    share.users && share.users.includes(user.username)
+  );
+  
+  if (usedInShares) {
+    showToast('Cannot remove: User is assigned to one or more shares', 'error');
+    return;
+  }
+  
+  // Show confirmation dialog
+  if (!confirm(`Are you sure you want to remove the user '${user.username}'?`)) {
+    return;
+  }
+  
+  // Remove the user
   state.servers.smb.users.splice(index, 1);
+  
+  // Re-render the users list
   renderSmbUsers();
+  showToast('User removed', 'success');
 }
 
 function removeSmbShare(index) {
+  if (index < 0 || index >= state.servers.smb.shares.length) return;
+  
+  const share = state.servers.smb.shares[index];
+  
+  // Show confirmation dialog
+  if (!confirm(`Are you sure you want to remove the SMB share '${share.name}'?`)) {
+    return;
+  }
+  
+  // Remove the share
   state.servers.smb.shares.splice(index, 1);
+  
+  // Re-render the shares list
   renderSmbShares();
+  showToast('SMB share removed', 'success');
 }
 
 function browseNfsSharePath(index) {
@@ -2117,22 +2626,127 @@ function showFolderBrowser(callback) {
 }
 
 function saveServerConfiguration() {
-  fetch('/api/server-config', {
+  // Validate configuration before saving
+  const errors = [];
+  
+  // Validate NFS shares
+  state.servers.nfs.shares.forEach((share, index) => {
+    if (!share.path) {
+      errors.push(`NFS share #${index + 1}: Path is required`);
+    }
+  });
+  
+  // Validate SMB users
+  const usernames = new Set();
+  state.servers.smb.users.forEach((user, index) => {
+    if (!user.username) {
+      errors.push(`SMB user #${index + 1}: Username is required`);
+    } else if (usernames.has(user.username)) {
+      errors.push(`SMB user #${index + 1}: Username '${user.username}' is duplicated`);
+    } else {
+      usernames.add(user.username);
+    }
+    
+    if (!user.password && state.servers.smb.users.length > 1) {
+      errors.push(`SMB user '${user.username}': Password is required`);
+    }
+  });
+  
+  // Validate SMB shares
+  const shareNames = new Set();
+  state.servers.smb.shares.forEach((share, index) => {
+    if (!share.name) {
+      errors.push(`SMB share #${index + 1}: Share name is required`);
+    } else if (shareNames.has(share.name)) {
+      errors.push(`SMB share #${index + 1}: Share name '${share.name}' is duplicated`);
+    } else {
+      shareNames.add(share.name);
+    }
+    
+    if (!share.path) {
+      errors.push(`SMB share '${share.name}': Path is required`);
+    }
+  });
+  
+  // Show errors if any
+  if (errors.length > 0) {
+    const errorHtml = `
+      <div style="max-height:200px;overflow-y:auto;margin-bottom:15px">
+        <h4 style="color:var(--danger-color);margin-top:0">Please fix the following errors:</h4>
+        <ul style="margin:0;padding-left:20px;color:var(--danger-color)">
+          ${errors.map(error => `<li>${error}</li>`).join('')}
+        </ul>
+      </div>
+    `;
+    
+    // Find or create the error container
+    let errorContainer = document.getElementById('serverConfigErrors');
+    if (!errorContainer) {
+      errorContainer = document.createElement('div');
+      errorContainer.id = 'serverConfigErrors';
+      const saveButton = document.getElementById('saveServerConfig');
+      saveButton.parentNode.insertBefore(errorContainer, saveButton);
+    }
+    
+    errorContainer.innerHTML = errorHtml;
+    
+    // Scroll to the first error
+    window.scrollTo({
+      top: errorContainer.offsetTop - 20,
+      behavior: 'smooth'
+    });
+    
+    showToast('Please fix the configuration errors', 'error');
+    return;
+  }
+  
+  // If we're here, the configuration is valid
+  
+  // Show loading state
+  const saveButton = document.getElementById('saveServerConfig');
+  const originalText = saveButton.textContent;
+  saveButton.disabled = true;
+  saveButton.innerHTML = '<span class="spinner">Saving...</span>';
+  
+  // Send the configuration to the server
+  fetch('/api/server/config', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(state.servers)
+    body: JSON.stringify({
+      nfs: state.servers.nfs,
+      smb: state.servers.smb
+    })
   })
-  .then(r => r.json())
+  .then(response => {
+    if (!response.ok) {
+      return response.json().then(err => {
+        throw new Error(err.error || 'Failed to save configuration');
+      });
+    }
+    return response.json();
+  })
   .then(data => {
-    if (data.ok) {
+    if (data.success) {
       showToast('Server configuration saved successfully', 'success');
-      hideModal();
+      
+      // If the server needs a restart, show a notice
+      if (data.requires_restart) {
+        showToast('Server restart required for changes to take effect', 'warning');
+      }
+      
+      // Close the modal after a short delay
+      setTimeout(hideModal, 1000);
     } else {
-      showToast('Error saving configuration: ' + (data.error || 'Unknown error'), 'error');
+      throw new Error(data.error || 'Failed to save configuration');
     }
   })
-  .catch(e => {
-    showToast('Error saving configuration: ' + e.message, 'error');
+  .catch(error => {
+    console.error('Error saving server configuration:', error);
+    showToast('Error saving configuration: ' + error.message, 'error');
+    
+    // Re-enable the save button
+    saveButton.disabled = false;
+    saveButton.textContent = originalText;
   });
 }
 
